@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dino Dash</title>
+  <style>
+    :root {
+      --ink: #f7f4ea;
+      --muted: #a9b2c0;
+      --panel: rgba(13, 20, 34, .82);
+      --line: rgba(255,255,255,.12);
+      --accent: #ffcc66;
+      --mint: #77e1bf;
+      --danger: #ff786e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 22px;
+      color: var(--ink); font: 500 15px/1.4 Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      background:
+        radial-gradient(circle at 15% 10%, rgba(119,225,191,.15), transparent 30%),
+        radial-gradient(circle at 85% 0%, rgba(255,204,102,.12), transparent 28%),
+        #090e18;
+    }
+    .shell { width: min(1100px, 100%); }
+    header { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 16px; }
+    .eyebrow { margin: 0 0 4px; color: var(--mint); font-size: 12px; letter-spacing: .18em; text-transform: uppercase; font-weight: 800; }
+    h1 { margin: 0; font-size: clamp(30px, 5vw, 54px); line-height: .95; letter-spacing: -.06em; }
+    .tagline { margin: 9px 0 0; color: var(--muted); }
+    .scoreboard { display: flex; gap: 10px; flex-wrap: wrap; justify-content: end; }
+    .stat { min-width: 100px; padding: 11px 15px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); text-align: right; }
+    .stat span { display: block; color: var(--muted); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+    .stat strong { display: block; margin-top: 2px; font-size: 22px; color: var(--accent); }
+    .game-wrap { overflow: hidden; position: relative; border: 1px solid var(--line); border-radius: 22px; background: #111a2a; box-shadow: 0 22px 70px rgba(0,0,0,.35); }
+    canvas { display: block; width: 100%; height: auto; aspect-ratio: 960 / 420; touch-action: manipulation; }
+    .bottom { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-top: 14px; color: var(--muted); }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; }
+    kbd { padding: 4px 8px; border: 1px solid var(--line); border-bottom-color: rgba(255,255,255,.28); border-radius: 7px; background: #151f31; color: var(--ink); font-size: 12px; }
+    button { cursor: pointer; border: 0; border-radius: 11px; padding: 10px 15px; color: #101723; background: var(--accent); font: 800 14px inherit; transition: transform .15s, filter .15s; }
+    button:hover { transform: translateY(-1px); filter: brightness(1.08); }
+    button.secondary { color: var(--ink); background: #1b2940; border: 1px solid var(--line); }
+    .actions { display: flex; gap: 8px; }
+    @media (max-width: 650px) {
+      body { padding: 14px; } header { display: block; } .scoreboard { justify-content: start; margin-top: 14px; }
+      .stat { text-align: left; } .bottom { display: block; } .actions { margin-top: 13px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div>
+        <p class="eyebrow">Arcade / endless runner</p>
+        <h1>Dino Dash</h1>
+        <p class="tagline">Run farther. Jump cleaner. Outlast the meteor night.</p>
+      </div>
+      <div class="scoreboard" aria-live="polite">
+        <div class="stat"><span>Score</span><strong id="score">00000</strong></div>
+        <div class="stat"><span>Best</span><strong id="best">00000</strong></div>
+      </div>
+    </header>
+
+    <section class="game-wrap" aria-label="Dino Dash game">
+      <canvas id="game" width="960" height="420"></canvas>
+    </section>
+
+    <div class="bottom">
+      <div class="controls">
+        <span><kbd>SPACE</kbd> jump</span>
+        <span><kbd>↓</kbd> duck</span>
+        <span><kbd>P</kbd> pause</span>
+      </div>
+      <div class="actions">
+        <button id="startBtn">Start run</button>
+        <button id="pauseBtn" class="secondary">Pause</button>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const canvas = document.querySelector("#game");
+    const ctx = canvas.getContext("2d");
+    const scoreEl = document.querySelector("#score");
+    const bestEl = document.querySelector("#best");
+    const startBtn = document.querySelector("#startBtn");
+    const pauseBtn = document.querySelector("#pauseBtn");
+
+    const W = canvas.width, H = canvas.height, groundY = 333;
+    let state = "ready", score = 0, best = Number(localStorage.getItem("dino-dash-best") || 0);
+    let speed = 7, spawnIn = 850, lastTime = 0, rafId = 0, dustTick = 0;
+    const keys = { down: false };
+    const player = { x: 116, y: groundY - 62, w: 54, h: 62, vy: 0, grounded: true, duck: false, blink: 0 };
+    let obstacles = [], particles = [], clouds = makeClouds();
+
+    bestEl.textContent = pad(best);
+
+    function pad(n) { return String(Math.floor(n)).padStart(5, "0"); }
+    function makeClouds() {
+      return Array.from({ length: 7 }, (_, i) => ({
+        x: i * 185 + Math.random() * 90, y: 70 + Math.random() * 115,
+        w: 70 + Math.random() * 90, s: .12 + Math.random() * .13
+      }));
+    }
+    function resetPlayer() {
+      player.y = groundY - 62; player.vy = 0; player.grounded = true; player.duck = false;
+    }
+    function startGame() {
+      state = "running"; score = 0; speed = 7; spawnIn = 700; obstacles = []; particles = []; resetPlayer();
+      startBtn.textContent = "Restart"; pauseBtn.textContent = "Pause"; lastTime = performance.now();
+      cancelAnimationFrame(rafId); rafId = requestAnimationFrame(loop);
+    }
+    function togglePause() {
+      if (state === "running") { state = "paused"; pauseBtn.textContent = "Resume"; }
+      else if (state === "paused") { state = "running"; pauseBtn.textContent = "Pause"; lastTime = performance.now(); }
+      draw();
+    }
+    function jump() {
+      if (state === "ready" || state === "gameover") { startGame(); return; }
+      if (state !== "running") return;
+      if (player.grounded) { player.vy = -15.5; player.grounded = false; puff(player.x + 8, groundY - 4, 5); }
+    }
+    function gameOver() {
+      state = "gameover"; best = Math.max(best, Math.floor(score)); localStorage.setItem("dino-dash-best", best);
+      bestEl.textContent = pad(best); startBtn.textContent = "Run again"; puff(player.x + 26, player.y + 35, 18);
+      draw();
+    }
+    function loop(now) {
+      if (state !== "running") return;
+      const dt = Math.min(32, now - lastTime || 16); lastTime = now;
+      update(dt); draw(); rafId = requestAnimationFrame(loop);
+    }
+    function update(dt) {
+      const t = dt / 16.67;
+      score += dt * .0125;
+      speed = 7 + Math.min(6, score / 180);
+      scoreEl.textContent = pad(score);
+
+      player.duck = keys.down && player.grounded;
+      const targetH = player.duck ? 40 : 62;
+      if (player.grounded) player.y = groundY - targetH;
+      else { player.vy += .82 * t; player.y += player.vy * t; }
+      if (player.y >= groundY - targetH) { player.y = groundY - targetH; player.vy = 0; player.grounded = true; }
+      player.blink += dt;
+      dustTick += dt;
+      if (dustTick > 150 && player.grounded) { dustTick = 0; puff(player.x + 6, groundY - 2, 1); }
+
+      clouds.forEach(c => { c.x -= c.s * t; if (c.x + c.w < -30) { c.x = W + 30; c.y = 60 + Math.random() * 120; } });
+      spawnIn -= dt;
+      if (spawnIn <= 0) {
+        const bird = score > 100 && Math.random() < .27;
+        obstacles.push(bird ? { type: "bird", x: W + 30, y: 211 + Math.random() * 35, w: 56, h: 28, flap: 0 } :
+          { type: "cactus", x: W + 30, y: groundY - 54, w: 34 + Math.random() * 15, h: 54 });
+        spawnIn = Math.max(570, 1100 - speed * 45) + Math.random() * 620;
+      }
+      obstacles.forEach(o => { o.x -= speed * t; if (o.flap !== undefined) o.flap += dt; });
+      obstacles = obstacles.filter(o => o.x + o.w > -40);
+      particles.forEach(p => { p.x += p.vx * t; p.y += p.vy * t; p.vy += .08 * t; p.life -= dt; });
+      particles = particles.filter(p => p.life > 0);
+      const pb = { x: player.x + 10, y: player.y + 7, w: player.w - 18, h: player.duck ? 30 : player.h - 12 };
+      if (obstacles.some(o => hit(pb, { x: o.x + 6, y: o.y + 5, w: o.w - 12, h: o.h - 8 }))) gameOver();
+    }
+    function hit(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
+    function puff(x, y, count) {
+      for (let i = 0; i < count; i++) particles.push({ x, y, vx: -1 + Math.random() * 2, vy: -1.4 - Math.random() * 1.8, life: 250 + Math.random() * 280, r: 1.5 + Math.random() * 3 });
+    }
+
+    function draw() {
+      drawSky(); drawClouds(); drawDistantHills(); drawGround();
+      obstacles.forEach(drawObstacle); drawParticles(); drawDino();
+      if (state === "ready") message("READY TO RUN", "Press space or tap Start run");
+      if (state === "paused") message("PAUSED", "Press P or Resume when you are ready");
+      if (state === "gameover") message("RUN ENDED", "Score " + pad(score) + "  •  press space to try again");
+    }
+    function drawSky() {
+      const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, "#101a32"); g.addColorStop(1, "#263d54");
+      ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = "#ffd36e"; ctx.globalAlpha = .9; ctx.beginPath(); ctx.arc(790, 86, 34, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1;
+      ctx.fillStyle = "rgba(255,255,255,.55)";
+      for (let i = 0; i < 28; i++) { const x = (i * 137 + 40) % W, y = (i * 53 + 28) % 180; ctx.fillRect(x, y, 2, 2); }
+    }
+    function drawClouds() {
+      ctx.fillStyle = "rgba(190,215,222,.13)";
+      clouds.forEach(c => { ctx.beginPath(); ctx.ellipse(c.x, c.y, c.w * .42, 14, 0, 0, Math.PI * 2); ctx.ellipse(c.x + 25, c.y - 9, c.w * .25, 17, 0, 0, Math.PI * 2); ctx.ellipse(c.x - 24, c.y - 3, c.w * .2, 12, 0, 0, Math.PI * 2); ctx.fill(); });
+    }
+    function drawDistantHills() {
+      ctx.fillStyle = "#172942"; ctx.beginPath(); ctx.moveTo(0, groundY);
+      for (let x = 0; x <= W; x += 55) ctx.lineTo(x, groundY - 22 - Math.sin(x * .012) * 24 - Math.sin(x * .034) * 10);
+      ctx.lineTo(W, groundY); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "#1c3348"; ctx.beginPath(); ctx.moveTo(0, groundY);
+      for (let x = 0; x <= W; x += 45) ctx.lineTo(x, groundY - 12 - Math.sin(x * .019 + 1) * 16);
+      ctx.lineTo(W, groundY); ctx.closePath(); ctx.fill();
+    }
+    function drawGround() {
+      ctx.fillStyle = "#111b2b"; ctx.fillRect(0, groundY, W, H - groundY);
+      ctx.strokeStyle = "rgba(119,225,191,.55)"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, groundY); ctx.lineTo(W, groundY); ctx.stroke();
+      ctx.strokeStyle = "rgba(255,255,255,.08)"; ctx.lineWidth = 1;
+      const offset = -((performance.now() / 7 * speed) % 52);
+      for (let x = offset; x < W; x += 52) { ctx.beginPath(); ctx.moveTo(x, groundY + 22); ctx.lineTo(x + 20, groundY + 22); ctx.stroke(); ctx.beginPath(); ctx.moveTo(x + 27, groundY + 45); ctx.lineTo(x + 37, groundY + 45); ctx.stroke(); }
+    }
+    function drawDino() {
+      const x = player.x, y = player.y, duck = player.duck;
+      ctx.save(); ctx.translate(x, y); ctx.fillStyle = "#77e1bf"; ctx.strokeStyle = "#0b1821"; ctx.lineWidth = 5; ctx.lineJoin = "round";
+      ctx.beginPath();
+      if (duck) { ctx.moveTo(8, 27); ctx.lineTo(0, 14); ctx.lineTo(13, 15); ctx.lineTo(18, 4); ctx.lineTo(48, 7); ctx.lineTo(54, 18); ctx.lineTo(47, 39); ctx.lineTo(18, 39); ctx.closePath(); }
+      else { ctx.moveTo(14, 62); ctx.lineTo(16, 31); ctx.lineTo(6, 22); ctx.lineTo(17, 21); ctx.lineTo(20, 8); ctx.lineTo(42, 3); ctx.lineTo(52, 14); ctx.lineTo(52, 39); ctx.lineTo(43, 42); ctx.lineTo(44, 62); ctx.lineTo(33, 62); ctx.lineTo(31, 43); ctx.lineTo(24, 43); ctx.lineTo(23, 62); ctx.closePath(); }
+      ctx.fill(); ctx.stroke();
+      ctx.fillStyle = "#0b1821"; ctx.beginPath(); ctx.arc(39, duck ? 15 : 14, 3.4, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = "#0b1821"; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(18, duck ? 25 : 31); ctx.lineTo(4, duck ? 24 : 27); ctx.stroke();
+      ctx.restore();
+    }
+    function drawObstacle(o) {
+      ctx.save(); ctx.translate(o.x, o.y); ctx.strokeStyle = "#0b1821"; ctx.lineWidth = 5; ctx.lineJoin = "round";
+      if (o.type === "bird") {
+        const flap = Math.sin(o.flap * .018) * 7; ctx.fillStyle = "#ff786e";
+        ctx.beginPath(); ctx.moveTo(4, 18); ctx.lineTo(21, 10 + flap); ctx.lineTo(31, 18); ctx.lineTo(47, 8 + flap); ctx.lineTo(54, 18); ctx.lineTo(39, 23); ctx.lineTo(25, 22); ctx.closePath(); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = "#0b1821"; ctx.beginPath(); ctx.arc(42, 15, 3, 0, Math.PI*2); ctx.fill();
+      } else {
+        ctx.fillStyle = "#ff786e"; ctx.beginPath(); ctx.roundRect(11, 0, 17, o.h, 7); ctx.roundRect(0, 19, 17, 10, 5); ctx.roundRect(26, 30, 16, 10, 5); ctx.fill(); ctx.stroke();
+      }
+      ctx.restore();
+    }
+    function drawParticles() { ctx.fillStyle = "rgba(255,211,110,.75)"; particles.forEach(p => { ctx.globalAlpha = Math.max(0, p.life / 500); ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill(); }); ctx.globalAlpha = 1; }
+    function message(title, sub) {
+      ctx.fillStyle = "rgba(7,12,22,.48)"; ctx.fillRect(0, 0, W, H);
+      ctx.textAlign = "center"; ctx.fillStyle = "#f7f4ea"; ctx.font = "800 34px Inter, system-ui, sans-serif"; ctx.fillText(title, W / 2, 185);
+      ctx.fillStyle = "#b8c4d0"; ctx.font = "500 16px Inter, system-ui, sans-serif"; ctx.fillText(sub, W / 2, 218);
+      ctx.textAlign = "left";
+    }
+
+    startBtn.addEventListener("click", startGame);
+    pauseBtn.addEventListener("click", togglePause);
+    canvas.addEventListener("pointerdown", jump);
+    window.addEventListener("keydown", e => {
+      if (["Space", "ArrowUp", "ArrowDown"].includes(e.code)) e.preventDefault();
+      if (e.code === "Space" || e.code === "ArrowUp") jump();
+      if (e.code === "ArrowDown") keys.down = true;
+      if (e.code === "KeyP") togglePause();
+    });
+    window.addEventListener("keyup", e => { if (e.code === "ArrowDown") keys.down = false; });
+    draw();
+  </script>
+</body>
+</html>
